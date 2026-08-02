@@ -35,8 +35,11 @@ struct TileStats {
 
 class TemporalUpscaler {
 public:
-    TemporalUpscaler(std::uint32_t w, std::uint32_t h, std::uint32_t tile = 32)
-        : w_(w), h_(h), tile_(tile)
+    enum class Rule { Fuzzy, Xbr };
+
+    TemporalUpscaler(std::uint32_t w, std::uint32_t h, std::uint32_t tile = 32,
+                     Rule rule = Rule::Fuzzy)
+        : w_(w), h_(h), tile_(tile), rule_(rule)
         , prev_((std::size_t)w * h, 0)
         , cache_((std::size_t)4 * w * h, 0) {
         tx_ = (w + tile - 1) / tile;
@@ -47,13 +50,14 @@ public:
     std::uint32_t tiles_y() const noexcept { return ty_; }
     const TileStats& stats() const noexcept { return stats_; }
 
-    // in: w*h bytes (one gray plane), out: 2w*2h bytes (fuzzy rule result).
+    // in: w*h bytes (one gray plane), out: 2w*2h bytes (rule result).
     void process(const std::uint8_t* in, std::uint8_t* out) {
         if (first_) {
             Grid g(w_, h_);
             std::memcpy(g.data.data(), in, (std::size_t)w_ * h_);
             Grid o;
-            rule::scale2x_fuzzy(g, o);
+            if (rule_ == Rule::Xbr) rule::scale2x_xbr(g, o);
+            else rule::scale2x_fuzzy(g, o);
             std::memcpy(cache_.data(), o.data.data(), o.data.size());
             stats_.total += tx_ * ty_;
             stats_.recomputed += tx_ * ty_;
@@ -73,7 +77,8 @@ public:
                     stats_.total++;
                     if (same) { stats_.reused++; continue; }
                     stats_.recomputed++;
-                    fz_tile_region(in, x0, y0, x1, y1);
+                    if (rule_ == Rule::Xbr) xbr_tile_region(in, x0, y0, x1, y1);
+                    else fz_tile_region(in, x0, y0, x1, y1);
                 }
             }
             std::memcpy(prev_.data(), in, (std::size_t)w_ * h_);
@@ -82,6 +87,33 @@ public:
     }
 
 private:
+    // xbr-scale input tile [x0,x1)x[y0,y1) into the 2x cache_ buffer.
+    void xbr_tile_region(const std::uint8_t* in, std::uint32_t x0, std::uint32_t y0,
+                         std::uint32_t x1, std::uint32_t y1) {
+        const std::size_t ow = 2 * (std::size_t)w_;
+        for (std::uint32_t y = y0; y < y1; ++y) {
+            for (std::uint32_t x = x0; x < x1; ++x) {
+                long X = (long)x, Y = (long)y;
+                std::uint8_t A = px_clamp(in, X - 1, Y - 1);
+                std::uint8_t B = px_clamp(in, X,     Y - 1);
+                std::uint8_t C = px_clamp(in, X + 1, Y - 1);
+                std::uint8_t D = px_clamp(in, X - 1, Y);
+                std::uint8_t E = in[(std::size_t)Y * w_ + X];
+                std::uint8_t F = px_clamp(in, X + 1, Y);
+                std::uint8_t G = px_clamp(in, X - 1, Y + 1);
+                std::uint8_t H = px_clamp(in, X,     Y + 1);
+                std::uint8_t I = px_clamp(in, X + 1, Y + 1);
+                std::uint8_t e0, e1, e2, e3;
+                rule::xbr_pick4(A, B, C, D, E, F, G, H, I, e0, e1, e2, e3);
+                std::size_t ox = 2 * (std::size_t)X, oy = 2 * (std::size_t)Y;
+                cache_[oy * ow + ox]         = e0;
+                cache_[oy * ow + ox + 1]     = e1;
+                cache_[(oy + 1) * ow + ox]   = e2;
+                cache_[(oy + 1) * ow + ox + 1] = e3;
+            }
+        }
+    }
+
     // fuzzy-scale input tile [x0,x1)x[y0,y1) into the 2x cache_ buffer.
     // 3x3 window reads are clamped at world edges (same as rule::px).
     void fz_tile_region(const std::uint8_t* in, std::uint32_t x0, std::uint32_t y0,
@@ -115,6 +147,7 @@ private:
     }
 
     std::uint32_t w_, h_, tile_, tx_ = 0, ty_ = 0;
+    Rule rule_ = Rule::Fuzzy;
     bool first_ = true;
     std::vector<std::uint8_t> prev_, cache_;
     TileStats stats_;

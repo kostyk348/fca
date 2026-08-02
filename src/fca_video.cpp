@@ -61,9 +61,11 @@ int main(int argc, char** argv) {
 
     bool do_denoise = false;
     std::uint32_t tile = 32;
+    bool temporal_xbr = false;
     for (int i = 4; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--denoise") do_denoise = true;
+        else if (a == "--rule" && i + 1 < argc) temporal_xbr = (std::string(argv[++i]) == "xbr");
         else if (a == "--tile" && i + 1 < argc) tile = (std::uint32_t)std::atoi(argv[++i]);
     }
     if (tile == 0) tile = 32;
@@ -73,7 +75,9 @@ int main(int argc, char** argv) {
 
     std::vector<uint8_t> frame(frame_sz), out(out_sz), den(frame_sz);
     std::vector<uint8_t> tmp_den(frame_sz);
-    fca::temporal::TemporalUpscaler tu((std::uint32_t)W, (std::uint32_t)H, tile);
+    fca::temporal::TemporalUpscaler tu((std::uint32_t)W, (std::uint32_t)H, tile,
+                                       temporal_xbr ? fca::temporal::TemporalUpscaler::Rule::Xbr
+                                                    : fca::temporal::TemporalUpscaler::Rule::Fuzzy);
 
     // reusable grids (avoid realloc per frame)
     fca::Grid g((std::uint32_t)W, (std::uint32_t)H), o;

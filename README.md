@@ -39,7 +39,9 @@ Real video pipeline (1080p source -> 480p -> 960p, 193 frames, gray):
 | mode | ms/frame |
 |---|---|
 | fuzzy | 0.70 |
-| temporal (live footage) | 1.69 (9% tiles reused — static scenes sleep much more) |
+| xbr | 2.98 (scalar) |
+| temporal (fuzzy) | 1.69 (9% tiles reused — static scenes sleep much more) |
+| temporal --rule xbr | 2.71 (10% reused; output bit-identical to xbr) |
 | fuzzy + median denoise | 8.5 (offline use only) |
 
 ## Quality (SSIM vs lanczos reference)
@@ -92,7 +94,7 @@ ffmpeg -i in.mp4 -f rawvideo -pix_fmt gray - \
   | ffmpeg -f rawvideo -pix_fmt gray -s 960x540 -i - out.mp4
 ```
 
-modes: `scale2x | fuzzy | xbr | temporal`, flags: `--denoise --tile N`.
+modes: `scale2x | fuzzy | xbr | temporal`, flags: `--denoise --tile N --rule xbr` (temporal with xbr rule).
 
 ### mpv shaders (real-time GPU)
 
