@@ -72,6 +72,7 @@ ffmpeg -i in.mp4 -f rawvideo -pix_fmt yuv444p - \
 
 | step | what it does |
 |---|---|
+| `--16bit` | **two-band 16-bit**: hi = v>>8 -> cellular rule, lo = v&255 -> bicubic; adaptive per-pixel mix (rule only where 3x3 contrast is high). Edges stay sharp, gradients stay smooth, **banding disappears** |
 | `--4x` | rule applied twice (480 -> 960 -> 1920); chroma bicubic x2 |
 | `--sharpen` | contrast-adaptive sharpen (FidelityFX CAS spirit): gain ∝ local contrast, clamped to 3x3 min/max — no ringing, no grain in flat areas |
 | `--vibrance N` | chroma saturation gain (0..255) |
@@ -129,7 +130,7 @@ ffmpeg -i in.mp4 -f rawvideo -pix_fmt gray - \
 ```
 
 modes: `scale2x | fuzzy | xbr | temporal`, flags: `--denoise --tile N --rule xbr`
-(temporal with xbr rule), color + FX: `--yuv444 --4x --sharpen --vibrance N
+(temporal with xbr rule), color + FX: `--yuv444 --16bit --4x --sharpen --vibrance N
 --contrast N --deband`.
 
 ### mpv shaders (real-time GPU)
