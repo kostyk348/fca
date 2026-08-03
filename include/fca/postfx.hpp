@@ -1,6 +1,8 @@
 #pragma once
 // libfca — post-processing effects for the "rich/vibrant" look.
 //   bicubic 2x  (Catmull-Rom, chroma planes)
+//   denoise_edge(edge-aware bilateral-style denoise — kills noise, keeps lines)
+//   dehalo      (halo/ringing suppression around strong edges)
 //   cas_sharpen (contrast-adaptive sharpening, FidelityFX spirit, anti-ringing)
 //   contrast_s  (luma contrast)
 //   vibrance    (chroma saturation gain)
@@ -19,6 +21,22 @@ namespace postfx {
 //   phase 0: [0, 256, 0, 0]     (exact copy)
 //   phase 1: [-16, 144, 144, -16]  (9/16, 9/16, -1/16, -1/16)
 void bicubic2x(const uint8_t* src, int w, int h, uint8_t* dst);
+
+// ------------------------------------------------------------------ denoise (edge-aware)
+// Bilateral-style 3x3 denoise: each neighbor contributes weighted by how close
+// its value is to the center (Gaussian-like decay on |diff|, integer table).
+// Edges (big 3x3 range) are preserved — a line pixel is never smeared into the
+// background. amount: 0 (off) .. 255 (strong). Run BEFORE upscale: noise must
+// not be scaled up and amplified by sharpening afterwards.
+void denoise_edge(uint8_t* plane, int w, int h, int amount);
+
+// ------------------------------------------------------------------ dehalo
+// Halo/ringing suppression: compression (DVD/BD) paints bright halos around
+// dark ink lines. Any pixel that sits near a strong edge (3x3 range >= 96) and
+// is brighter than m + 7/8*(M-m) is a halo peak -> clamped back into the
+// clean gradient. Deterministic, leaves genuine bright detail (background
+// luminance sits below the peak zone) untouched.
+void dehalo(uint8_t* plane, int w, int h);
 
 // ------------------------------------------------------------------ CAS sharpen
 // Contrast-adaptive sharpening on a plane (in place).

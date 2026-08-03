@@ -46,7 +46,7 @@ int usage() {
             "  color:    --yuv444 -> reads/writes yuv444p (Y,U,V planes)\n"
             "  16-bit:   --16bit  -> reads/writes yuv444p16le (two-band upscale)\n"
             "  flags:  --denoise --tile N --rule xbr --yuv444 --16bit --vsr --4x\n"
-            "          --sharpen --contrast N --vibrance N --deband\n");
+            "          --sharpen --dehalo --dn N --contrast N --vibrance N --deband\n");
     return 1;
 }
 
@@ -123,8 +123,8 @@ int main(int argc, char** argv) {
         return usage();
 
     bool do_denoise = false, yuv444 = false, bit16 = false, do_4x = false;
-    bool do_sharpen = false, do_deband = false, vsr = false;
-    int contrast = 0, vibrance = 0;
+    bool do_sharpen = false, do_deband = false, vsr = false, do_dehalo = false;
+    int contrast = 0, vibrance = 0, dn_amount = 0;
     std::uint32_t tile = 32;
     bool temporal_xbr = false;
     for (int i = 4; i < argc; ++i) {
@@ -136,6 +136,8 @@ int main(int argc, char** argv) {
         else if (a == "--4x") do_4x = true;
         else if (a == "--sharpen") do_sharpen = true;
         else if (a == "--deband") do_deband = true;
+        else if (a == "--dehalo") do_dehalo = true;
+        else if (a == "--dn" && i + 1 < argc) dn_amount = std::atoi(argv[++i]);
         else if (a == "--contrast" && i + 1 < argc) contrast = std::atoi(argv[++i]);
         else if (a == "--vibrance" && i + 1 < argc) vibrance = std::atoi(argv[++i]);
         else if (a == "--rule" && i + 1 < argc) temporal_xbr = (std::string(argv[++i]) == "xbr");
@@ -144,6 +146,7 @@ int main(int argc, char** argv) {
     if (tile == 0) tile = 32;
     if (contrast < 0) contrast = 0;
     if (vibrance < 0) vibrance = 0;
+    if (dn_amount < 0) dn_amount = 0;
     if (bit16) yuv444 = true; // 16-bit implies color
 
     const std::size_t plane_sz = (std::size_t)W * H;
@@ -202,6 +205,14 @@ int main(int argc, char** argv) {
             tmp_den = o.data;
             y_in = tmp_den.data();
         }
+        // edge-aware denoise: kills compression noise BEFORE it gets scaled up
+        // and amplified by sharpening; lines survive (bilateral weights + edge guard)
+        if (dn_amount > 0) {
+            std::vector<uint8_t> dn_buf(y_in, y_in + plane_sz);
+            fca::postfx::denoise_edge(dn_buf.data(), W, H, dn_amount);
+            tmp_den = std::move(dn_buf);
+            y_in = tmp_den.data();
+        }
 
         // ================= luma upscale =================
         bool use_vsr = false;
@@ -221,12 +232,14 @@ int main(int argc, char** argv) {
             if (do_4x) {
                 if (bit16) {
                     // second pass: two-band on the 2x fused result
+                    if (do_dehalo) fca::postfx::dehalo(mid_Y.data(), 2 * W, 2 * H);
                     fca::postfx::bicubic2x(YL.data(), W, H, mid_YL.data());
                     fca::postfx::bicubic2x(mid_Y.data(), 2 * W, 2 * H, bc_Y.data());
                     rule2x(mid_Y.data(), 2 * W, 2 * H, rl_Y.data(), mode.c_str());
                     adaptive_mix(mid_Y.data(), bc_Y.data(), rl_Y.data(), 2 * W, 2 * H, out_Y.data());
                     fca::postfx::bicubic2x(mid_YL.data(), 2 * W, 2 * H, out_YL.data());
                 } else {
+                    if (do_dehalo) fca::postfx::dehalo(mid_Y.data(), 2 * W, 2 * H);
                     rule2x(mid_Y.data(), 2 * W, 2 * H, out_Y.data(), mode.c_str());
                 }
             } else {
@@ -241,6 +254,7 @@ int main(int argc, char** argv) {
                 adaptive_mix(y_in, bc_Y.data(), rl_Y.data(), W, H, mid_Y.data());
                 fca::postfx::bicubic2x(YL.data(), W, H, mid_YL.data());
                 // second pass: two-band again on the 2x result
+                if (do_dehalo) fca::postfx::dehalo(mid_Y.data(), 2 * W, 2 * H);
                 fca::postfx::bicubic2x(mid_Y.data(), 2 * W, 2 * H, bc_Y.data());
                 rule2x(mid_Y.data(), 2 * W, 2 * H, rl_Y.data(), mode.c_str());
                 adaptive_mix(mid_Y.data(), bc_Y.data(), rl_Y.data(), 2 * W, 2 * H, out_Y.data());
@@ -252,6 +266,7 @@ int main(int argc, char** argv) {
                 fca::postfx::bicubic2x(YL.data(), W, H, out_YL.data());
             }
             // FX on hi band
+            if (do_dehalo && !do_4x) fca::postfx::dehalo(out_Y.data(), (int)(scale * W), (int)(scale * H));
             if (do_sharpen) fca::postfx::cas_sharpen(out_Y.data(), (int)(scale * W), (int)(scale * H), 255);
             if (contrast > 0) fca::postfx::contrast_s(out_Y.data(), (int)(scale * W), (int)(scale * H), contrast);
         } else {
@@ -260,6 +275,7 @@ int main(int argc, char** argv) {
             if (do_4x) {
                 if (mode == "temporal") tu.process(y_in, mid_Y.data());
                 else rule2x(y_in, W, H, mid_Y.data(), mode.c_str());
+                if (do_dehalo) fca::postfx::dehalo(mid_Y.data(), 2 * W, 2 * H);
                 fca::Grid g2((std::uint32_t)(2 * W), (std::uint32_t)(2 * H));
                 g2.data = mid_Y;
                 upscale(g2, o, mode.c_str());
@@ -270,6 +286,7 @@ int main(int argc, char** argv) {
                 else rule2x(y_in, W, H, out_Y.data(), mode.c_str());
                 y_out = out_Y.data();
             }
+            if (do_dehalo && !do_4x) fca::postfx::dehalo(y_out, (int)(scale * W), (int)(scale * H));
             if (do_sharpen) fca::postfx::cas_sharpen(y_out, (int)(scale * W), (int)(scale * H), 255);
             if (contrast > 0) fca::postfx::contrast_s(y_out, (int)(scale * W), (int)(scale * H), contrast);
             if (do_deband) fca::postfx::deband(y_out, (int)(scale * W), (int)(scale * H), (unsigned)frames);
