@@ -9,6 +9,7 @@
 *.raw
 *.png
 !docs/*.png
+!docs/vsr/*.png
 
 # editor
 *.swp
