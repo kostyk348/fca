@@ -102,6 +102,11 @@ sub-pixel shift carries *new* sampling information in every frame, so fusing
 several frames at motion-compensated sub-pixel taps reconstructs detail that no
 single-frame upscaler can see.
 
+> **Full story — the why, the how, and the philosophy of the filter:
+> [`docs/vsr.md`](docs/vsr.md).** Comparison files: `docs/vsr/pan_compare.mp4`
+> (side-by-side video), `docs/vsr/sbs_fr27.png` (labeled crop of the strongest
+> frame), `docs/vsr/sbs_still.png` (full-frame still).
+
 **Synthetic ground-truth test** (Bird 960x540, 0.5 px/frame diagonal pan,
 frames are true sub-pixel shifts of the same GT — the honest setup where VSR
 can win):
@@ -118,8 +123,7 @@ what caps the gain, not the estimator.
 
 **Real video** (Ergo Proxy OP pan, 45 frames, 4x 16-bit): VSR fires on the 5
 moving frames (MAE>1.0 vs no-VSR, min SSIM 0.982 — i.e. a visible change where
-motion exists) and is bit-identical on static frames. Side-by-side:
-`/tmp/opencode/anime_test/pan_sbs.mp4` (VSR | no-VSR).
+motion exists) and is bit-identical on static frames.
 
 Cost: ~+47 ms/frame over the plain 4x path (estimator is subsampled 2x2 while
 keeping exact phase parity). VSR is a quality-first feature; use `--vsr` when
@@ -190,6 +194,7 @@ src/fca_video.cpp        rawvideo pipe CLI
 bench/bench.cpp          benchmark + correctness check
 shaders/                 mpv GLSL versions
 docs/                    comparison images
+docs/vsr/                VSR comparisons (side-by-side video, crops) — see docs/vsr.md
 ```
 
 ## License
