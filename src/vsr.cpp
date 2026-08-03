@@ -42,7 +42,6 @@ static long long sse(const uint8_t* a, const uint8_t* b, int w, int h, int dx, i
     }
     return s;
 }
-
 Shift estimate_shift(const uint8_t* a, const uint8_t* b, int w, int h) {
     Shift g{0, 0};
     if (w < 8 || h < 8) return g;
@@ -194,6 +193,7 @@ void fusion2x(const uint8_t* cur, const std::vector<const uint8_t*>& hist,
     // output 2x pixel (X,Y)=(2x+ox, 2y+oy) lies at 1x position (x+ox/2, y+oy/2):
     // phases 0.0 for even, 0.5 for odd (in 8.8: 0 and 128)
     const int phase[2] = {0, 128};
+#pragma omp parallel for schedule(static)
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             for (int oy = 0; oy < 2; ++oy) {

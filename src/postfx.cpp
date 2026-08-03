@@ -22,6 +22,7 @@ void bicubic2x(const uint8_t* src, int w, int h, uint8_t* dst) {
     if (w <= 0 || h <= 0) return;
     // horizontal pass: src (w*h) -> tmp (2w*h)
     std::vector<int16_t> tmp((size_t)2 * w * h);
+#pragma omp parallel for schedule(static)
     for (int y = 0; y < h; ++y) {
         const uint8_t* row = src + (size_t)y * w;
         for (int ox = 0; ox < 2 * w; ++ox) {
@@ -39,6 +40,7 @@ void bicubic2x(const uint8_t* src, int w, int h, uint8_t* dst) {
     }
     // vertical pass: tmp (2w*h) -> dst (2w*2h)
     const int W2 = 2 * w;
+#pragma omp parallel for schedule(static)
     for (int oy = 0; oy < 2 * h; ++oy) {
         int i = oy >> 1;
         const int16_t* tap = (oy & 1) ? kTap1 : kTap0;
@@ -59,6 +61,7 @@ void bicubic2x(const uint8_t* src, int w, int h, uint8_t* dst) {
 void cas_sharpen(uint8_t* plane, int w, int h, int strength) {
     if (strength <= 0 || w <= 0 || h <= 0) return;
     std::vector<uint8_t> in(plane, plane + (size_t)w * h);
+#pragma omp parallel for schedule(static)
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const uint8_t* c = &in[(size_t)y * w + x];
@@ -114,6 +117,7 @@ void deband(uint8_t* plane, int w, int h, unsigned frame) {
     std::vector<uint8_t> in(plane, plane + (size_t)w * h);
     const int kFlat = 20;
     const uint32_t seed = frame * 83492791u;
+#pragma omp parallel for schedule(static)
     for (int y = 0; y < h; ++y) {
         for (int x = 0; x < w; ++x) {
             const uint8_t* c = &in[(size_t)y * w + x];

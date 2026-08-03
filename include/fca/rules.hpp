@@ -73,6 +73,7 @@ inline void fz_pick4(uint8_t B, uint8_t D, uint8_t E, uint8_t F, uint8_t H,
 
 void scale2x_fuzzy(const Grid& in, Grid& out) {
     out = Grid(in.w * 2, in.h * 2);
+#pragma omp parallel for schedule(static)
     for (size_t y = 0; y < in.h; ++y) {
         for (size_t x = 0; x < in.w; ++x) {
             uint8_t B = px(in, (long)x, (long)y - 1);
@@ -138,6 +139,7 @@ inline void xbr_pick4(uint8_t A, uint8_t B, uint8_t C,
 
 void scale2x_xbr(const Grid& in, Grid& out) {
     out = Grid(in.w * 2, in.h * 2);
+#pragma omp parallel for schedule(static)
     for (size_t y = 0; y < in.h; ++y) {
         for (size_t x = 0; x < in.w; ++x) {
             uint8_t A = px(in, (long)x - 1, (long)y - 1);
@@ -162,6 +164,7 @@ void scale2x_xbr(const Grid& in, Grid& out) {
 // ---------------------------------------------------------------- scalar reference
 void scale2x_scalar(const Grid& in, Grid& out) {
     out = Grid(in.w * 2, in.h * 2);
+#pragma omp parallel for schedule(static)
     for (size_t y = 0; y < in.h; ++y) {
         for (size_t x = 0; x < in.w; ++x) {
             uint8_t B = px(in, (long)x, (long)y - 1);
@@ -268,6 +271,7 @@ void scale2x_avx2(const Grid& in, Grid& out) {
     out = Grid(in.w * 2, in.h * 2);
     if (in.w == 0 || in.h == 0) return;
 
+#pragma omp parallel for schedule(static)
     for (size_t y = 0; y < in.h; ++y) {
         size_t yt = y == 0 ? 0 : y - 1;
         size_t yb = y + 1 < in.h ? y + 1 : in.h - 1;
@@ -423,6 +427,7 @@ void scale2x_fuzzy_avx2(const Grid& in, Grid& out) {
     out = Grid(in.w * 2, in.h * 2);
     if (in.w == 0 || in.h == 0) return;
 
+#pragma omp parallel for schedule(static)
     for (size_t y = 0; y < in.h; ++y) {
         size_t yt = y == 0 ? 0 : y - 1;
         size_t yb = y + 1 < in.h ? y + 1 : in.h - 1;

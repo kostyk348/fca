@@ -1,7 +1,8 @@
 # libfca
 CXX      ?= g++
-CXXFLAGS := -O2 -march=native -std=gnu++20 -Wall -Wextra -Iinclude
+CXXFLAGS := -O2 -march=native -std=gnu++20 -Wall -Wextra -Iinclude -fopenmp
 CFLAGS    = $(CXXFLAGS)
+OMPFLAGS := -fopenmp
 
 all: fca_upscale fca_bench fca_video
 
