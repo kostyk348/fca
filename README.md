@@ -1,5 +1,9 @@
 # libfca — fuzzy cellular-rule upscaling (fca-video)
 
+[![Release](https://img.shields.io/github/v/release/kostyk348/fca?sort=semver&color=blue)](https://github.com/kostyk348/fca/releases)
+[![License](https://img.shields.io/badge/license-Apache-2.0-green)](https://github.com/kostyk348/fca/blob/main/LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/kostyk348/fca?branch=main)](https://github.com/kostyk348/fca/commits/main)
+
 CPU integer 2x upscaler for old video / anime: rule-based edge-directed scaling
 with **fuzzy membership**, **AVX2**, **temporal tile cache**, optional median
 denoise. No ML, no GPU, no float-heavy math — deterministic, integer-only,
