@@ -1,17 +1,1 @@
-# binaries
-/fca_upscale
-/fca_bench
-/fca_video
-*.o
-
-# generated media
-*.ppm
-*.raw
-*.png
-!docs/*.png
-!docs/vsr/*.png
-
-# editor
-*.swp
-.vscode/
-.idea/
+/target
