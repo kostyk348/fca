@@ -1,0 +1,31 @@
+[package]
+name = "fca"
+version = "0.3.0"
+edition = "2021"
+rust-version = "1.80"
+description = "libfca — fuzzy cellular-rule 2x upscaler for old video/anime: scale2x/fuzzy/xbr rules, temporal tile cache, VSR fusion, integer-only post FX"
+license = "Apache-2.0"
+repository = "https://github.com/kostyk348/fca"
+readme = "README.md"
+keywords = ["upscaler", "video", "anime", "cellular", "scale2x"]
+categories = ["multimedia::video", "command-line-utilities"]
+
+[lib]
+name = "fca"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fca_upscale"
+path = "src/bin/fca_upscale.rs"
+
+[[bin]]
+name = "fca_video"
+path = "src/bin/fca_video.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1

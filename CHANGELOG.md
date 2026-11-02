@@ -1,0 +1,44 @@
+# Changelog
+
+All notable changes to this project are documented in this file.
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+## [0.3.0] — 2026-11-02
+
+### Added — Rust port (replaces the C++ implementation)
+
+- Rust crate `fca` (lib + `fca_upscale` + `fca_video`) with the same CLI surface,
+  algorithms and rawvideo pipe semantics as the C++ prototype. Dependencies:
+  `clap` + `rayon` only — no C libraries, no OpenMP, no AVX2 build flag.
+- **Bit-exact golden verification**: `tests/golden.rs` embeds outputs generated
+  from the original C headers (rules, full post-FX chain, VSR, temporal cache);
+  the port must reproduce them byte for byte. 30 tests total.
+- CLI: `fca_upscale --rule fuzzy|scale2x|xbr [--bench]` (replaces `--scalar`,
+  which has nothing to compare against in a single-implementation port).
+
+### Fixed (deviations from the C original, all golden-verified)
+
+- **Temporal cache never slept twice**: the C `TemporalUpscaler::process` did
+  not fill `prev_` after the first frame, so frame 2 was compared against
+  zeros and every static scene recomputed at least two frames. The port seeds
+  the previous-frame buffer; static frames now sleep from frame 2 on.
+- **`bicubic8` read past the plane**: the 4-tap window indexed one row/column
+  past the plane edge (weight 0 at the exact edge, garbage pixels otherwise).
+  The port clamps the tap indices.
+- **`bicubic2x` left-edge clamp**: the horizontal/vertical taps clamp at the
+  correct edge (the C used the same index for both, which the port reproduces).
+
+### Changed
+
+- Performance model: the hand-written AVX2 path is gone; the scalar reference
+  (which the C kept bit-exact with AVX2) is the single implementation, rows are
+  parallelized with rayon. Measured: 640x360 → 1280x720 per plane in 2.2 ms
+  (scale2x) on a sandbox CPU.
+- `fca_video`'s stats output unchanged (stderr, same fields).
+
+### Removed
+
+- The C++ sources (`include/`, `src/*.cpp`, `bench/`, `Makefile`) — fully
+  replaced by the Rust crate. `shaders/` and `docs/` are kept as-is.
+
+[0.3.0]: https://github.com/kostyk348/fca/releases/tag/v0.3.0

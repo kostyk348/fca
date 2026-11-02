@@ -1,0 +1,27 @@
+name: Feature request
+description: A new rule, FX step, pipeline mode or CLI flag
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The task this solves
+      description: What artifact do you need to produce, and why does the current set of kinds not cover it?
+    validations:
+      required: true
+  - type: textarea
+    id: spec-shape
+    attributes:
+      label: Proposed behaviour
+      description: What the flag/mode should do, and where it sits in the pipeline order.
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Constraints
+      options:
+        - label: Deterministic (integer-only, fixed point)
+          required: true
+        - label: Golden tests updated or untouched
+          required: true

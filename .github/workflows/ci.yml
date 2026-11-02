@@ -1,12 +1,68 @@
 name: CI
+
 on:
   push:
+    branches: [main, master]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  rust:
+    name: Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
-      - name: Build
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Smoke: PPM upscale + determinism
+        shell: bash
         run: |
-          make
+          python3 - <<'PY'
+          import random
+          random.seed(42)
+          w, h = 64, 48
+          with open('/tmp/in.ppm', 'wb') as f:
+              f.write(f'P6\n{w} {h}\n255\n'.encode())
+              f.write(bytes(random.randrange(256) for _ in range(w*h*3)))
+          PY
+          ./target/release/fca_upscale /tmp/in.ppm /tmp/out1.ppm --rule fuzzy
+          ./target/release/fca_upscale /tmp/in.ppm /tmp/out2.ppm --rule fuzzy
+          cmp /tmp/out1.ppm /tmp/out2.ppm
+
+      - name: Smoke: rawvideo pipe (gray / yuv444)
+        shell: bash
+        run: |
+          head -c 6400 /dev/urandom > /tmp/f.gray
+          ./target/release/fca_video 40 40 fuzzy < /tmp/f.gray > /tmp/g.out
+          test "$(stat -c%s /tmp/g.out 2>/dev/null || stat -f%z /tmp/g.out)" -eq 25600
+          head -c 19200 /dev/urandom > /tmp/f.y4
+          ./target/release/fca_video 40 40 fuzzy --yuv444 --dn 100 < /tmp/f.y4 > /tmp/c.out
+          test "$(stat -c%s /tmp/c.out 2>/dev/null || stat -f%z /tmp/c.out)" -eq 76800
