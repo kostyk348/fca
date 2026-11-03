@@ -1,1 +1,4 @@
 /target
+
+# local benchmark sources (large videos, not part of the repo)
+bench_src/
