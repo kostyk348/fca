@@ -134,9 +134,62 @@ pub fn xbr_pick4(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8, i: u8) 
 
 // ------------------------------------------------------------- full-plane rules
 
-/// EPX: 3x3 rule, hard tolerance picks (baseline of the quality ladder).
-#[allow(clippy::if_same_then_else)] // branch structure mirrors the C reference bit-for-bit
-pub fn scale2x_scalar(input: &Grid) -> Grid {
+/// EPX picks with strict priority — the branch structure of the C reference,
+/// shared by the scalar plane rule and the AVX2 edge pixels.
+// identical blocks are intentional: e2/e3 repeat the d/f fallback on purpose
+#[allow(clippy::if_same_then_else)]
+#[inline]
+pub fn epx_pick4(b: u8, d: u8, e: u8, f: u8, h: u8) -> [u8; 4] {
+    let (e0, e1, e2, e3);
+    if !eq_tol(b, h) && !eq_tol(d, f) {
+        e0 = if eq_tol(b, d) {
+            b
+        } else if eq_tol(b, f) {
+            f
+        } else if eq_tol(d, f) {
+            d
+        } else {
+            e
+        };
+        e1 = if eq_tol(b, f) {
+            f
+        } else if eq_tol(b, d) {
+            b
+        } else if eq_tol(f, d) {
+            d
+        } else {
+            e
+        };
+        e2 = if eq_tol(h, d) {
+            d
+        } else if eq_tol(h, f) {
+            f
+        } else if eq_tol(d, f) {
+            d
+        } else {
+            e
+        };
+        e3 = if eq_tol(h, f) {
+            f
+        } else if eq_tol(h, d) {
+            d
+        } else if eq_tol(f, d) {
+            d
+        } else {
+            e
+        };
+    } else {
+        e0 = e;
+        e1 = e;
+        e2 = e;
+        e3 = e;
+    }
+    [e0, e1, e2, e3]
+}
+
+/// Forced-scalar EPX plane rule — the bit-exactness reference for the AVX2
+/// path and the fallback on CPUs without AVX2.
+pub fn epx_scalar_ref(input: &Grid) -> Grid {
     let w = input.w;
     let mut out = Grid::new(w * 2, input.h * 2);
     out.data
@@ -152,52 +205,7 @@ pub fn scale2x_scalar(input: &Grid) -> Grid {
                 let e = input.data[y * w + x];
                 let f = px(input, x as isize + 1, y as isize);
                 let h = px(input, x as isize, y as isize + 1);
-                let (e0, e1, e2, e3);
-                if !eq_tol(b, h) && !eq_tol(d, f) {
-                    // EPX picks with strict priority
-                    e0 = if eq_tol(b, d) {
-                        b
-                    } else if eq_tol(b, f) {
-                        f
-                    } else if eq_tol(d, f) {
-                        d
-                    } else {
-                        e
-                    };
-                    e1 = if eq_tol(b, f) {
-                        f
-                    } else if eq_tol(b, d) {
-                        b
-                    } else if eq_tol(f, d) {
-                        d
-                    } else {
-                        e
-                    };
-                    e2 = if eq_tol(h, d) {
-                        d
-                    } else if eq_tol(h, f) {
-                        f
-                    } else if eq_tol(d, f) {
-                        d
-                    } else {
-                        e
-                    };
-                    e3 = if eq_tol(h, f) {
-                        f
-                    } else if eq_tol(h, d) {
-                        d
-                    } else if eq_tol(f, d) {
-                        d
-                    } else {
-                        e
-                    };
-                } else {
-                    e0 = e;
-                    e1 = e;
-                    e2 = e;
-                    e3 = e;
-                }
-                let picks = [e0, e1, e2, e3];
+                let picks = epx_pick4(b, d, e, f, h);
                 row[2 * x] = picks[2 * sub];
                 row[2 * x + 1] = picks[2 * sub + 1];
             }
@@ -205,9 +213,37 @@ pub fn scale2x_scalar(input: &Grid) -> Grid {
     out
 }
 
-/// Soft blend by triangle membership — anti-aliased diagonals, no
-/// frame-to-frame flicker at thresholds.
-pub fn scale2x_fuzzy(input: &Grid) -> Grid {
+/// EPX plane rule: scalar reference, AVX2 inner blocks when the CPU has them
+/// (bit-exact either way; `FCA_SIMD=0` pins the scalar path before first use).
+#[allow(clippy::if_same_then_else)] // branch structure mirrors the C reference bit-for-bit
+pub fn scale2x_scalar(input: &Grid) -> Grid {
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::has_avx2() && input.w > 2 && input.h > 0 {
+        let mut out = Grid::new(input.w * 2, input.h * 2);
+        let h = input.h;
+        let w2 = out.w;
+        out.data
+            .par_chunks_mut(2 * w2)
+            .with_max_len(1 << 21)
+            .enumerate()
+            .for_each(|(y, pair)| {
+                let (o0, o1) = pair.split_at_mut(w2);
+                let yt = if y == 0 { 0 } else { y - 1 };
+                let yb = if y + 1 < h { y + 1 } else { h - 1 };
+                // SAFETY: AVX2 presence is checked by has_avx2(); the two
+                // output rows are disjoint halves of this task's chunk.
+                unsafe {
+                    crate::simd::epx_rows_avx2(input.row(yt), input.row(y), input.row(yb), o0, o1);
+                }
+            });
+        return out;
+    }
+    epx_scalar_ref(input)
+}
+
+/// Forced-scalar fuzzy plane rule — the bit-exactness reference for the AVX2
+/// path and the fallback on CPUs without AVX2.
+pub fn fuzzy_scalar_ref(input: &Grid) -> Grid {
     let w = input.w;
     let mut out = Grid::new(w * 2, input.h * 2);
     out.data
@@ -229,6 +265,39 @@ pub fn scale2x_fuzzy(input: &Grid) -> Grid {
             }
         });
     out
+}
+
+/// Fuzzy plane rule: scalar reference, AVX2 inner blocks when the CPU has
+/// them (bit-exact either way; `FCA_SIMD=0` pins the scalar path).
+pub fn scale2x_fuzzy(input: &Grid) -> Grid {
+    #[cfg(target_arch = "x86_64")]
+    if crate::simd::has_avx2() && input.w > 2 && input.h > 0 {
+        let mut out = Grid::new(input.w * 2, input.h * 2);
+        let h = input.h;
+        let w2 = out.w;
+        out.data
+            .par_chunks_mut(2 * w2)
+            .with_max_len(1 << 21)
+            .enumerate()
+            .for_each(|(y, pair)| {
+                let (o0, o1) = pair.split_at_mut(w2);
+                let yt = if y == 0 { 0 } else { y - 1 };
+                let yb = if y + 1 < h { y + 1 } else { h - 1 };
+                // SAFETY: AVX2 presence is checked by has_avx2(); the two
+                // output rows are disjoint halves of this task's chunk.
+                unsafe {
+                    crate::simd::fuzzy_rows_avx2(
+                        input.row(yt),
+                        input.row(y),
+                        input.row(yb),
+                        o0,
+                        o1,
+                    );
+                }
+            });
+        return out;
+    }
+    fuzzy_scalar_ref(input)
 }
 
 /// Fuzzy + diagonal corners and weighted pair blend: thin 1px diagonal lines survive.

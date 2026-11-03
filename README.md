@@ -84,26 +84,50 @@ pipeline keeps gradients smooth without blurring the railing:
 
 ### End-to-end throughput on real footage
 
-`ffmpeg decode -> rawvideo pipe -> fca_video -> null`, 854x480 -> 1708x960,
-best of 3, 1800 frames of episode 1 (sandbox x86-64):
+`ffmpeg decode -> rawvideo pipe -> fca_video -> null`, 854x480 source,
+best of 3, sandbox x86-64 (AVX2). Scalar rows are the same build pinned with
+`FCA_SIMD=0` — the SIMD gain on identical code and input:
 
 | pipeline | fps | vs realtime @ 24 fps |
 |---|---|---|
-| decode only (baseline) | 487 | 20.3x |
-| ffmpeg swscale lanczos x2 (reference) | 241 | 10.0x |
-| **fca_video fuzzy x2** (`--yuv444`) | **49** | **2.0x** |
-| **fca_video xbr x2** (`--yuv444`) | **38** | **1.6x** |
-| **fca_video temporal x2** (`--yuv444`) | **62** | **2.6x** |
-| **fca_video 16-bit two-band + CAS + dehalo** | **30** | **1.25x** |
+| decode only (baseline) | 855 | 35.6x |
+| ffmpeg swscale lanczos x2 (reference) | 372 | 15.5x |
+| fca_video fuzzy x2 — scalar (`FCA_SIMD=0`) | 75 | 3.1x |
+| **fca_video fuzzy x2 — AVX2** | **205** | **8.6x** |
+| fca_video xbr x2 (scalar kernel) | 50 | 2.1x |
+| fca_video temporal x2 — AVX2 | 96 | 4.0x |
+| fca_video 16-bit two-band + CAS + dehalo (scalar / AVX2) | 45 | 1.9x |
+| fca_video `--hq --4x` -> 3416x1920 — AVX2 | 4.7 | 0.2x |
 
-Every fca pipeline is comfortably above realtime on one sandbox core. Note
-that **temporal beats plain fuzzy** (62 vs 49 fps): on anime most tiles are
-static between frames, so the S3 sleep/wake cache skips them — the quality
-feature is also a speed feature.
+The 16-bit pipeline no longer cares about the rule dispatch: after the
+`bicubic2x` padded-FIR rewrite and u16 LE packing it is bounded by the
+two-band mixing and FX, not by the cellular rule (45 fps either way, +48%
+over the previous build). Temporal still wins on anime (96 vs 205 fps is
+decode-bound): on static scenes the S3 sleep/wake cache skips most tiles —
+the quality feature is also a speed feature.
 
 <p align="center">
-  <img src="docs/rust/real_bench.png" alt="real anime throughput benchmark" width="860">
+  <img src="docs/rust/simd_bench.png" alt="AVX2 vs scalar on real anime footage" width="880">
 </p>
+
+### AVX2 vector kernels are back
+
+The C prototype carried hand-written AVX2 kernels (`include/fca/rules.hpp`,
+namespace `avx2`); the 0.3 port dropped them. 0.4 ports them back to
+`std::arch` (`src/simd.rs`): 32-pixel `fz_block32`/`epx_block32` blocks with
+saturated abs-diff tolerance, 16-bit triangle membership, `mulhi` weight
+products and the half-shift blend — **bit-exact with the scalar reference by
+construction**, verified on deterministic random grids across every 32-block
+boundary width in the test suite. Dispatch is runtime (`is_x86_feature_detected!`,
+cached; `FCA_SIMD=0` pins scalar). Rule-stage micro-benchmark at 854x480:
+
+| rule | scalar | AVX2 | gain |
+|---|---|---|---|
+| fuzzy | 7.91 ms/frame | 0.44 ms/frame | **18.0x** |
+| scale2x (EPX) | 3.40 ms/frame | 1.57 ms/frame | **2.2x** |
+
+End to end the fuzzy pipeline goes 75 -> 205 fps (+172%); against the 0.3
+build (49 fps) it is **4.2x**.
 
 ## Synthetic torture test
 
@@ -134,7 +158,7 @@ Diagonals + circles, the quality ladder, and pixel art:
   <img src="docs/rust/cmp_pixelart_zoom.png" alt="pixel art sprites" width="720">
 </p>
 
-## The Rust port (v0.3)
+## The Rust port (v0.4)
 
 The prototype was C++20 with a hand-written AVX2 path kept bit-exact against a
 scalar reference. The port keeps **the scalar arithmetic as the single source
@@ -146,9 +170,9 @@ temporal cache) are generated from the original headers and embedded in
 
 | | C++ prototype | Rust 0.3 |
 |---|---|---|
-| SIMD | hand-written AVX2 + scalar reference | scalar reference only (auto-vectorized), rayon rows |
+| SIMD | hand-written AVX2 + scalar reference | scalar reference **+ hand-written AVX2 back again** (runtime-dispatched, bit-exact), rayon rows |
 | deps | C++20 + AVX2, OpenMP | Rust 1.80+, no C deps |
-| tests | bench-only | 30 (incl. C-golden bit-exactness) |
+| tests | bench-only | 34 (C-golden bit-exactness + AVX2-vs-scalar on random grids) |
 | temporal cache | 2nd frame never sleeps (bug) | fixed, golden-verified |
 | `bicubic8` edge taps | read past the plane | clamped (documented fix) |
 
@@ -228,10 +252,29 @@ ffmpeg -i in.mp4 -f rawvideo -pix_fmt yuv444p - \
 | `--dehalo` | **halo/ringing suppression**: DVD/BD compression paints bright halos around ink lines. Any pixel near a strong edge (cross range >= 96) brighter than m+7/8*(M-m) is a halo peak and is clamped back into the clean gradient. Applied at the 2x stage in 4x mode (4x cheaper; the rule cannot recreate peaks). |
 | `--16bit` | **two-band 16-bit**: hi = v>>8 -> cellular rule, lo = v&255 -> bicubic; adaptive per-pixel mix (rule only where 3x3 contrast is high). Edges stay sharp, gradients stay smooth, **banding disappears** |
 | `--4x` | rule applied twice (480 -> 960 -> 1920); chroma bicubic x2 |
+| `--ld N` | **ink-line darkening** (0..255): a pixel that is the strict 3x3 minimum with >= 32 contrast is a line core and is darkened by up to N levels scaled by edge strength — restores anime stroke weight lost to interpolation; cannot halo (it only deepens the darkest pixel) |
+| `--hq` | **maximum-quality preset**: `--16bit --sharpen --dehalo --dn 40 --vibrance 24 --ld 24`, plus a second CAS pass *between* the two 4x stages (strength 160) to restore micro-contrast before the last interpolation |
 | `--sharpen` | contrast-adaptive sharpen (FidelityFX CAS spirit): gain ∝ local contrast, clamped to 3x3 min/max — no ringing, no grain in flat areas |
 | `--vibrance N` | chroma saturation gain (0..255) |
 | `--contrast N` | luma contrast (0..255) |
 | `--deband` | gradient dither in flat zones — breaks banding steps on skies |
+
+### 4x max quality on real footage
+
+`fca_video 854 480 xbr --hq --4x` renders 854x480 -> **3416x1920** at 4.7 fps
+(AVX2, sandbox). Full frame vs swscale lanczos 4x:
+
+<p align="center">
+  <img src="docs/rust/real_4x_full.png" alt="4x full frame: lanczos vs fca --hq --4x" width="760">
+</p>
+
+Native 4x-pixel crops (x6 detail): lanczos softens the silhouette edge into
+the background and washes out the statue-door lines; the two-band rule keeps
+them — line darkening restores the ink weight:
+
+<p align="center">
+  <img src="docs/rust/real_4x_zoom.png" alt="4x zoom crops: lanczos vs fca --hq --4x" width="900">
+</p>
 
 ### VSR (temporal fusion) — honest deterministic super-resolution
 
@@ -257,8 +300,10 @@ and costs almost nothing there. Stats are printed to stderr by `fca_video`.
 cargo build --release     # fca_upscale, fca_video
 ```
 
-Requires a Rust toolchain (1.80+). No C libraries, no OpenMP, no AVX2 flag —
-the binary runs on any 64-bit CPU.
+Requires a Rust toolchain (1.80+). No C libraries, no OpenMP. AVX2 is used
+when the CPU has it (runtime-detected, bit-exact with the scalar path —
+`FCA_SIMD=0` pins scalar); otherwise the binary is pure scalar and runs on
+any 64-bit CPU.
 
 ## Usage
 
@@ -280,8 +325,8 @@ ffmpeg -i in.mp4 -f rawvideo -pix_fmt gray - \
 ```
 
 modes: `scale2x | fuzzy | xbr | temporal`, flags: `--denoise --tile N --rule xbr`
-(temporal with xbr rule), color + FX: `--yuv444 --16bit --4x --dn N --dehalo
---sharpen --vibrance N --contrast N --deband --vsr`.
+(temporal with xbr rule), color + FX: `--yuv444 --16bit --4x --hq --dn N
+--dehalo --sharpen --ld N --vibrance N --contrast N --deband --vsr`.
 
 Quality pipeline order: denoise (pre-upscale) -> upscale -> dehalo (2x stage) ->
 sharpen -> contrast -> deband.

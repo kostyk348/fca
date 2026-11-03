@@ -13,6 +13,7 @@
 //! Module map:
 //! - [`grid`] — the uint8 lattice field
 //! - [`rules`] — `scale2x` (EPX) / `fuzzy` / `xbr` cellular rules (the quality ladder)
+//! - [`simd`] — hand-written AVX2 kernels for the rules (bit-exact, runtime-dispatched)
 //! - [`denoise`] — median 3x3 pre-filter
 //! - [`postfx`] — bicubic2x, edge-aware denoise, dehalo, CAS sharpen, contrast, vibrance, deband
 //! - [`temporal`] — sleep/wake tile cache (unchanged tiles are never recomputed)
@@ -20,13 +21,16 @@
 //! - [`ppm`] — PPM P6 I/O for the CLI
 //!
 //! Determinism: every function is integer-only with fixed-point arithmetic;
-//! the same input always produces the same output on any platform.
+//! the same input always produces the same output on any platform. The AVX2
+//! path is bit-exact with the scalar reference, so dispatch never changes
+//! results — `FCA_SIMD=0` pins the scalar path (e.g. for benchmarks).
 
 pub mod denoise;
 pub mod grid;
 pub mod postfx;
 pub mod ppm;
 pub mod rules;
+pub mod simd;
 pub mod temporal;
 pub mod vsr;
 

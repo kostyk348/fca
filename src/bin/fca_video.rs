@@ -51,6 +51,11 @@ struct Cli {
     /// Double pass -> 4x
     #[arg(long = "4x")]
     four_x: bool,
+    /// Maximum-quality preset: 16-bit two-band + CAS (also between the 4x
+    /// passes) + dehalo + edge-aware denoise 40 + vibrance 24 + line darkening.
+    /// Implies --16bit --sharpen --dehalo; individual flags can only add on top.
+    #[arg(long)]
+    hq: bool,
     /// CAS contrast-adaptive sharpen on Y (hi band)
     #[arg(long)]
     sharpen: bool,
@@ -60,6 +65,9 @@ struct Cli {
     /// Edge-aware denoise amount 0..255 (pre-upscale)
     #[arg(long = "dn", default_value_t = 0)]
     dn: i32,
+    /// Ink-line darkening amount 0..255 (restores anime stroke weight)
+    #[arg(long = "ld", default_value_t = 0)]
+    ld: i32,
     /// Luma contrast 0..255
     #[arg(long, default_value_t = 0)]
     contrast: i32,
@@ -156,7 +164,16 @@ fn main() {
 }
 
 fn run() -> i32 {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    // --hq expands to the max chain before anything else reads the flags
+    if cli.hq {
+        cli.sixteen_bit = true;
+        cli.sharpen = true;
+        cli.dehalo = true;
+        cli.dn = cli.dn.max(40);
+        cli.vibrance = cli.vibrance.max(24);
+        cli.ld = cli.ld.max(24);
+    }
     let (w, h) = (cli.width, cli.height);
     if w == 0 || h == 0 {
         eprintln!("error: W and H must be positive");
@@ -260,6 +277,10 @@ fn run() -> i32 {
                     if cli.dehalo {
                         postfx::dehalo(&mut bufs.mid_y, 2 * w, 2 * h);
                     }
+                    if cli.hq {
+                        // restore micro-contrast between the two passes
+                        postfx::cas_sharpen(&mut bufs.mid_y, 2 * w, 2 * h, 160);
+                    }
                     bufs.mid_yl = postfx::bicubic2x(&bufs.yl, w, h);
                     bufs.bc_y = postfx::bicubic2x(&bufs.mid_y, 2 * w, 2 * h);
                     bufs.rl_y = rule2x(&bufs.mid_y, 2 * w, 2 * h, mode);
@@ -289,6 +310,10 @@ fn run() -> i32 {
                 if cli.dehalo {
                     postfx::dehalo(&mut mid2, 2 * w, 2 * h);
                 }
+                if cli.hq {
+                    // restore micro-contrast between the two passes
+                    postfx::cas_sharpen(&mut mid2, 2 * w, 2 * h, 160);
+                }
                 bufs.bc_y = postfx::bicubic2x(&mid2, 2 * w, 2 * h);
                 bufs.rl_y = rule2x(&mid2, 2 * w, 2 * h, mode);
                 bufs.out_y = adaptive_mix(&mid2, &bufs.bc_y, &bufs.rl_y, 2 * w, 2 * h);
@@ -303,6 +328,9 @@ fn run() -> i32 {
             }
             if cli.sharpen {
                 postfx::cas_sharpen(&mut bufs.out_y, scale * w, scale * h, 255);
+            }
+            if cli.ld > 0 {
+                postfx::line_dark(&mut bufs.out_y, scale * w, scale * h, cli.ld);
             }
             if cli.contrast > 0 {
                 postfx::contrast_s(&mut bufs.out_y, scale * w, scale * h, cli.contrast);
@@ -331,6 +359,9 @@ fn run() -> i32 {
             }
             if cli.sharpen {
                 postfx::cas_sharpen(&mut bufs.out_y, scale * w, scale * h, 255);
+            }
+            if cli.ld > 0 {
+                postfx::line_dark(&mut bufs.out_y, scale * w, scale * h, cli.ld);
             }
             if cli.contrast > 0 {
                 postfx::contrast_s(&mut bufs.out_y, scale * w, scale * h, cli.contrast);
@@ -385,38 +416,33 @@ fn run() -> i32 {
         let mut out_bytes: Vec<u8>;
         if bit16 {
             let n = out_sz;
-            out_bytes = Vec::with_capacity(6 * n);
-            // yuv444p16le: lo byte first, hi byte second
-            let planes: [(&Vec<u8>, &Vec<u8>); 3] = [
-                (&bufs.out_y, &bufs.out_yl),
-                (&bufs.out_u, &bufs.out_ul),
-                (&bufs.out_v, &bufs.out_vl),
+            // yuv444p16le packed as u16 (lo byte first), dumped once as LE bytes
+            let mut planes16 = vec![0u16; 3 * n];
+            let plane_pairs = [
+                (&bufs.out_y, &bufs.out_yl, 0),
+                (&bufs.out_u, &bufs.out_ul, 1),
+                (&bufs.out_v, &bufs.out_vl, 2),
             ];
-            for (hi, lo) in planes {
+            for (hi, lo, k) in plane_pairs {
+                let base = k * n;
                 for i in 0..n {
-                    out_bytes.push(lo[i]);
-                    out_bytes.push(hi[i]);
+                    planes16[base + i] = (u16::from(hi[i]) << 8) | u16::from(lo[i]);
                 }
             }
             if cli.vibrance > 0 {
-                let g = 256 + ((cli.vibrance * 100) >> 8);
-                let ubase = 2 * n;
-                let vbase = 4 * n;
-                for i in 0..n {
-                    let bi = ubase + 2 * i;
-                    let vi = vbase + 2 * i;
-                    let ub = i32::from(out_bytes[bi]) | (i32::from(out_bytes[bi + 1]) << 8);
-                    let vb = i32::from(out_bytes[vi]) | (i32::from(out_bytes[vi + 1]) << 8);
-                    let ub = ub - 32768;
-                    let vb = vb - 32768;
-                    let un = (32768 + ((ub * g) >> 8)).clamp(0, 65535);
-                    let vn = (32768 + ((vb * g) >> 8)).clamp(0, 65535);
-                    out_bytes[bi] = (un & 0xFF) as u8;
-                    out_bytes[bi + 1] = ((un >> 8) & 0xFF) as u8;
-                    out_bytes[vi] = (vn & 0xFF) as u8;
-                    out_bytes[vi + 1] = ((vn >> 8) & 0xFF) as u8;
+                let g = (256 + ((cli.vibrance * 100) >> 8)) as u32;
+                for k in 1..3 {
+                    let base = k * n;
+                    for cell in &mut planes16[base..base + n] {
+                        let c = i32::from(*cell) - 32768;
+                        *cell = (32768 + ((c * g as i32) >> 8)).clamp(0, 65535) as u16;
+                    }
                 }
             }
+            // u16 slice -> LE byte view (u16 is 2-aligned, length is even)
+            let bytes =
+                unsafe { std::slice::from_raw_parts(planes16.as_ptr().cast::<u8>(), 3 * n * 2) };
+            out_bytes = bytes.to_vec();
         } else if yuv444 {
             out_bytes = Vec::with_capacity(3 * out_sz);
             out_bytes.extend_from_slice(&bufs.out_y);

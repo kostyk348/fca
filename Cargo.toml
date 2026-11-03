@@ -1,6 +1,6 @@
 [package]
 name = "fca"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.80"
 description = "libfca — fuzzy cellular-rule 2x upscaler for old video/anime: scale2x/fuzzy/xbr rules, temporal tile cache, VSR fusion, integer-only post FX"

@@ -24,6 +24,10 @@ const K_TAP1: [i32; 4] = [-16, 144, 144, -16];
 
 /// Separable Catmull-Rom 2x resize of a single plane (`w*h` -> `2w*2h`).
 /// For 2x only two phases exist (0 and 0.5) -> constant taps.
+///
+/// Both passes are written as padded 4-tap FIRs (clamp-once edges, contiguous
+/// inner loops) so the compiler can auto-vectorize them; the arithmetic is
+/// identical to the reference (same taps, same summation order, same shifts).
 pub fn bicubic2x(src: &[u8], w: usize, h: usize) -> Vec<u8> {
     let w2 = 2 * w;
     let h2 = 2 * h;
@@ -34,41 +38,44 @@ pub fn bicubic2x(src: &[u8], w: usize, h: usize) -> Vec<u8> {
     let mut tmp = vec![0u8; w2 * h];
     tmp.par_chunks_mut(w2).enumerate().for_each(|(y, row)| {
         let src_row = &src[y * w..(y + 1) * w];
-        for (ox, cell) in row.iter_mut().enumerate() {
-            let i = ox >> 1;
-            let acc: i32 = if ox & 1 == 0 {
-                i32::from(src_row[i]) << 8
-            } else {
-                K_TAP1
-                    .iter()
-                    .enumerate()
-                    .map(|(k, &t)| {
-                        let ix = (i as i32 + k as i32 - 1).clamp(0, w as i32 - 1) as usize;
-                        t * i32::from(src_row[ix])
-                    })
-                    .sum()
-            };
-            *cell = clamp8(acc >> 8);
+        // p = [row[0] | row | row[w-1] | row[w-1]] so taps never clamp in the
+        // loop (the last tap reaches source column i+2 = w+1)
+        let mut p = Vec::with_capacity(w + 3);
+        p.push(src_row[0]);
+        p.extend_from_slice(src_row);
+        p.push(src_row[w - 1]);
+        p.push(src_row[w - 1]);
+        for i in 0..w {
+            row[2 * i] = src_row[i]; // phase 0: exact copy
+            let acc = K_TAP1[0] * i32::from(p[i])
+                + K_TAP1[1] * i32::from(p[i + 1])
+                + K_TAP1[2] * i32::from(p[i + 2])
+                + K_TAP1[3] * i32::from(p[i + 3]);
+            row[2 * i + 1] = clamp8(acc >> 8);
         }
     });
     // vertical pass: tmp (2w*h) -> dst (2w*2h)
     let mut dst = vec![0u8; w2 * h2];
     dst.par_chunks_mut(w2).enumerate().for_each(|(oy, row)| {
         let i = oy >> 1;
-        for x in 0..w2 {
-            let acc: i32 = if oy & 1 == 0 {
-                i32::from(tmp[i * w2 + x]) << 8
-            } else {
-                K_TAP1
-                    .iter()
-                    .enumerate()
-                    .map(|(k, &t)| {
-                        let iy = (i as i32 + k as i32 - 1).clamp(0, h as i32 - 1) as usize;
-                        t * i32::from(tmp[iy * w2 + x])
-                    })
-                    .sum()
-            };
-            row[x] = clamp8(acc >> 8);
+        if oy & 1 == 0 {
+            row.copy_from_slice(&tmp[i * w2..(i + 1) * w2]); // phase 0: exact copy
+        } else {
+            let y0 = (i as i32 - 1).clamp(0, h as i32 - 1) as usize;
+            let y1 = i.min(h - 1);
+            let y2 = (i + 1).min(h - 1);
+            let y3 = (i + 2).min(h - 1);
+            let r0 = &tmp[y0 * w2..y0 * w2 + w2];
+            let r1 = &tmp[y1 * w2..y1 * w2 + w2];
+            let r2 = &tmp[y2 * w2..y2 * w2 + w2];
+            let r3 = &tmp[y3 * w2..y3 * w2 + w2];
+            for x in 0..w2 {
+                let acc = K_TAP1[0] * i32::from(r0[x])
+                    + K_TAP1[1] * i32::from(r1[x])
+                    + K_TAP1[2] * i32::from(r2[x])
+                    + K_TAP1[3] * i32::from(r3[x]);
+                row[x] = clamp8(acc >> 8);
+            }
         }
     });
     dst
@@ -213,6 +220,50 @@ pub fn cas_sharpen(plane: &mut [u8], w: usize, h: usize, strength: i32) {
     });
 }
 
+// ------------------------------------------------------------------ line dark
+
+/// Ink-line weight restoration: thin dark lines (character outlines, mouth
+/// strokes) lose contrast when the source was interpolated. A pixel that is
+/// the strict local minimum of its 3x3 neighborhood with enough contrast is a
+/// line core; it is darkened by up to `amount` levels, scaled by edge
+/// strength (smoothstep over the 3x3 range, 32..96). Flat areas and bright
+/// content are untouched, and darkening the darkest pixel of a neighborhood
+/// cannot create halos — it only deepens the stroke.
+pub fn line_dark(plane: &mut [u8], w: usize, h: usize, amount: i32) {
+    if amount <= 0 || w < 3 || h < 3 {
+        return;
+    }
+    let input = plane.to_vec();
+    plane.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        if y == 0 || y == h - 1 {
+            return; // borders unchanged (1px ring)
+        }
+        for x in 1..w - 1 {
+            let p = i32::from(input[y * w + x]);
+            let mut mn = p;
+            let mut mx = p;
+            for dy in [-1i32, 0, 1] {
+                let yy = (y as i32 + dy) as usize;
+                for dx in [-1i32, 0, 1] {
+                    let v = i32::from(input[yy * w + (x as i32 + dx) as usize]);
+                    mn = mn.min(v);
+                    mx = mx.max(v);
+                }
+            }
+            let range = mx - mn;
+            if p != mn || range < 32 {
+                continue; // not a dark line core
+            }
+            // smoothstep 32..96
+            let t = ((range - 32) * 255 / 64).min(255);
+            let ws = (t * t) >> 8;
+            let wf = (ws * (768 - 2 * t)) >> 8;
+            let d = (amount * wf) >> 8;
+            row[x] = clamp8(p - d);
+        }
+    });
+}
+
 // ------------------------------------------------------------------ contrast
 
 /// S-curve-ish luma contrast: `out = 128 + (p-128) * K >> 8`.
@@ -282,6 +333,27 @@ pub fn deband(plane: &mut [u8], w: usize, h: usize, frame: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn line_dark_darkens_line_core_only() {
+        // bright field with a 1px dark vertical line: the line core darkens,
+        // the field stays, nothing leaves 0..255
+        let (w, h) = (9, 7);
+        let mut plane = vec![200u8; w * h];
+        for y in 0..h {
+            plane[y * w + 4] = 40;
+        }
+        let before = plane.clone();
+        line_dark(&mut plane, w, h, 24);
+        assert_eq!(plane[3 * w + 2], 200, "flat field untouched");
+        assert!(plane[3 * w + 4] < 40, "line core darkened");
+        assert!(plane[3 * w + 4] >= 40 - 24, "darkening capped by amount");
+        // flat plane is a no-op
+        let mut flat = vec![128u8; w * h];
+        line_dark(&mut flat, w, h, 24);
+        assert!(flat.iter().all(|&v| v == 128));
+        let _ = before;
+    }
 
     fn ramp(w: usize, h: usize) -> Vec<u8> {
         (0..w * h).map(|i| (i * 7 % 256) as u8).collect()
