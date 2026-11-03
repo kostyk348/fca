@@ -42,7 +42,7 @@ jobs:
       - name: Build (release)
         run: cargo build --release
 
-      - name: Smoke: PPM upscale + determinism
+      - name: "Smoke: PPM upscale + determinism"
         shell: bash
         run: |
           python3 - <<'PY'
@@ -57,7 +57,7 @@ jobs:
           ./target/release/fca_upscale /tmp/in.ppm /tmp/out2.ppm --rule fuzzy
           cmp /tmp/out1.ppm /tmp/out2.ppm
 
-      - name: Smoke: rawvideo pipe (gray / yuv444)
+      - name: "Smoke: rawvideo pipe (gray/yuv444)"
         shell: bash
         run: |
           head -c 6400 /dev/urandom > /tmp/f.gray
